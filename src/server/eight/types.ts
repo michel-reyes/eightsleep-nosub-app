@@ -50,24 +50,24 @@ export const UserProfileSchema = z.object({
     features: z.array(z.string()).optional(),
     currentDevice: z.object({
       id: z.string(),
-      side: z.string(),
-      timeZone: z.string(),
-    }),
+      side: z.string().optional(),
+      timeZone: z.string().optional(),
+    }).optional(),
     hotelGuest: z.boolean().optional(),
   }).catchall(z.unknown()),
 });
 
 export const DeviceDataSchema = z.object({
   result: z.object({
-    deviceId: z.string(),
-    leftHeatingLevel: z.number(),
-    leftTargetHeatingLevel: z.number(),
-    leftNowHeating: z.boolean(),
-    leftHeatingDuration: z.number(),
-    rightHeatingLevel: z.number(),
-    rightTargetHeatingLevel: z.number(),
-    rightNowHeating: z.boolean(),
-    rightHeatingDuration: z.number(),
+    deviceId: z.string().optional(),
+    leftHeatingLevel: z.number().optional(),
+    leftTargetHeatingLevel: z.number().optional(),
+    leftNowHeating: z.boolean().optional(),
+    leftHeatingDuration: z.number().optional(),
+    rightHeatingLevel: z.number().optional(),
+    rightTargetHeatingLevel: z.number().optional(),
+    rightNowHeating: z.boolean().optional(),
+    rightHeatingDuration: z.number().optional(),
     features: z.array(z.string()).optional(),
     online: z.boolean().optional(),
     priming: z.boolean().optional(),
@@ -87,11 +87,11 @@ export const TrendDataSchema = z.object({
   result: z.object({
     days: z.array(
       z.object({
-        day: z.string(),
-        score: z.number(),
-        sleepDuration: z.number(),
-        presenceStart: z.string(),
-        presenceEnd: z.string(),
+        day: z.string().optional(),
+        score: z.number().optional(),
+        sleepDuration: z.number().optional(),
+        presenceStart: z.string().optional(),
+        presenceEnd: z.string().optional(),
         lightDuration: z.number().optional(),
         deepDuration: z.number().optional(),
         remDuration: z.number().optional(),
@@ -119,23 +119,23 @@ export const IntervalsDataSchema = z.object({
   result: z.object({
     intervals: z.array(
       z.object({
-        id: z.string(),
-        ts: z.string(),
+        id: z.string().optional(),
+        ts: z.string().optional(),
         stages: z.array(
           z.object({
             stage: z.enum(["awake", "light", "deep", "rem", "out"]),
             duration: z.number(),
           }),
         ),
-        score: z.number(),
+        score: z.number().optional(),
         timeseries: z.object({
           tnt: z.array(z.tuple([z.string(), z.number()])).optional(),
           tempBedC: z.array(z.tuple([z.string(), z.number()])).optional(),
           tempRoomC: z.array(z.tuple([z.string(), z.number()])).optional(),
           respiratoryRate: z.array(z.tuple([z.string(), z.number()])).optional(),
           heartRate: z.array(z.tuple([z.string(), z.number()])).optional(),
-        }).passthrough(),
-        incomplete: z.boolean(),
+        }).passthrough().optional(),
+        incomplete: z.boolean().optional(),
       }),
     ),
   }),

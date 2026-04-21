@@ -81,11 +81,16 @@ function formatDateInTimezone(date: Date, timeZone: string) {
   }).format(date);
 }
 
-function sortByDateValue<T>(items: T[], getValue: (item: T) => string) {
+function safeSortByDateValue<T>(
+  items: T[],
+  getValue: (item: T) => string | undefined,
+) {
   return [...items].sort((a, b) => {
-    const aValue = Date.parse(getValue(a));
-    const bValue = Date.parse(getValue(b));
-    return aValue - bValue;
+    const aValue = Date.parse(getValue(a) ?? "");
+    const bValue = Date.parse(getValue(b) ?? "");
+    const safeA = Number.isNaN(aValue) ? 0 : aValue;
+    const safeB = Number.isNaN(bValue) ? 0 : bValue;
+    return safeA - safeB;
   });
 }
 
@@ -97,6 +102,10 @@ function getLatestNumericValue(
   }
 
   return values[values.length - 1]?.[1] ?? null;
+}
+
+function logDashboardFailure(label: string, error: unknown) {
+  console.error(`Dashboard source failed: ${label}`, error);
 }
 
 async function getAuthenticatedEightContext(headers: Headers) {
@@ -337,7 +346,8 @@ export const userRouter = createTRPCRouter({
       const startDate = new Date(now);
       startDate.setDate(startDate.getDate() - 14);
 
-      const [deviceData, trendData, intervalsData] = await Promise.all([
+      const [deviceDataResult, trendDataResult, intervalsDataResult] =
+        await Promise.allSettled([
         getDeviceData(token, deviceId),
         getTrendData(
           token,
@@ -349,20 +359,46 @@ export const userRouter = createTRPCRouter({
         getIntervalsData(token, user.eightUserId),
       ]);
 
-      const latestTrend = sortByDateValue(trendData, (item) => item.presenceEnd)
-        .filter((item) => item.sleepDuration > 0)
-        .at(-1);
-      const latestInterval = sortByDateValue(intervalsData, (item) => item.ts).at(
-        -1,
-      );
+      const deviceData =
+        deviceDataResult.status === "fulfilled" ? deviceDataResult.value : null;
+      const trendData =
+        trendDataResult.status === "fulfilled" ? trendDataResult.value : [];
+      const intervalsData =
+        intervalsDataResult.status === "fulfilled"
+          ? intervalsDataResult.value
+          : [];
 
-      const stageBreakdown = latestInterval?.stages.reduce<Record<string, number>>(
-        (acc, stage) => {
+      if (deviceDataResult.status === "rejected") {
+        logDashboardFailure("deviceData", deviceDataResult.reason);
+      }
+      if (trendDataResult.status === "rejected") {
+        logDashboardFailure("trendData", trendDataResult.reason);
+      }
+      if (intervalsDataResult.status === "rejected") {
+        logDashboardFailure("intervalsData", intervalsDataResult.reason);
+      }
+
+      const latestTrend = safeSortByDateValue(
+        trendData,
+        (item) => item.presenceEnd,
+      )
+        .filter(
+          (item) =>
+            (item.sleepDuration ?? 0) > 0 &&
+            Boolean(item.presenceStart) &&
+            Boolean(item.presenceEnd),
+        )
+        .at(-1);
+      const latestInterval = safeSortByDateValue(
+        intervalsData,
+        (item) => item.ts,
+      ).at(-1);
+
+      const stageBreakdown =
+        latestInterval?.stages?.reduce<Record<string, number>>((acc, stage) => {
           acc[stage.stage] = (acc[stage.stage] ?? 0) + stage.duration;
           return acc;
-        },
-        {},
-      ) ?? {};
+        }, {}) ?? {};
 
       const latestStages = latestInterval?.stages ?? [];
       const currentStage =
@@ -382,46 +418,46 @@ export const userRouter = createTRPCRouter({
         },
         podStatus: {
           deviceId,
-          online: deviceData.online ?? null,
-          priming: deviceData.priming ?? null,
-          needsPriming: deviceData.needsPriming ?? null,
-          hasWater: deviceData.hasWater ?? null,
-          lastPrime: deviceData.lastPrime ?? null,
-          lastHeard: deviceData.lastHeard ?? null,
-          firmwareVersion: deviceData.firmwareVersion ?? null,
-          modelString: deviceData.modelString ?? null,
-          hubSerial: deviceData.hubSerial ?? null,
-          features: deviceData.features ?? [],
-          leftHeatingLevel: deviceData.leftHeatingLevel,
-          leftTargetHeatingLevel: deviceData.leftTargetHeatingLevel,
-          leftNowHeating: deviceData.leftNowHeating,
-          rightHeatingLevel: deviceData.rightHeatingLevel,
-          rightTargetHeatingLevel: deviceData.rightTargetHeatingLevel,
-          rightNowHeating: deviceData.rightNowHeating,
+          online: deviceData?.online ?? null,
+          priming: deviceData?.priming ?? null,
+          needsPriming: deviceData?.needsPriming ?? null,
+          hasWater: deviceData?.hasWater ?? null,
+          lastPrime: deviceData?.lastPrime ?? null,
+          lastHeard: deviceData?.lastHeard ?? null,
+          firmwareVersion: deviceData?.firmwareVersion ?? null,
+          modelString: deviceData?.modelString ?? null,
+          hubSerial: deviceData?.hubSerial ?? null,
+          features: deviceData?.features ?? [],
+          leftHeatingLevel: deviceData?.leftHeatingLevel ?? null,
+          leftTargetHeatingLevel: deviceData?.leftTargetHeatingLevel ?? null,
+          leftNowHeating: deviceData?.leftNowHeating ?? null,
+          rightHeatingLevel: deviceData?.rightHeatingLevel ?? null,
+          rightTargetHeatingLevel: deviceData?.rightTargetHeatingLevel ?? null,
+          rightNowHeating: deviceData?.rightNowHeating ?? null,
         },
         sleep: latestTrend
           ? {
-              sessionDate: latestTrend.day,
-              bedtime: latestTrend.presenceStart,
-              wakeTime: latestTrend.presenceEnd,
-              score: latestTrend.score,
-              durationSeconds: latestTrend.sleepDuration,
+              sessionDate: latestTrend.day ?? null,
+              bedtime: latestTrend.presenceStart ?? null,
+              wakeTime: latestTrend.presenceEnd ?? null,
+              score: latestTrend.score ?? null,
+              durationSeconds: latestTrend.sleepDuration ?? null,
               hrv: latestTrend.sleepQualityScore?.hrv?.current ?? null,
               heartRate:
-                getLatestNumericValue(latestInterval?.timeseries.heartRate) ??
+                getLatestNumericValue(latestInterval?.timeseries?.heartRate) ??
                 latestTrend.sleepRoutineScore?.heartRate?.current ??
                 null,
               breathRate:
                 getLatestNumericValue(
-                  latestInterval?.timeseries.respiratoryRate,
+                  latestInterval?.timeseries?.respiratoryRate,
                 ) ??
                 latestTrend.sleepQualityScore?.respiratoryRate?.current ??
                 null,
               roomTempC:
-                getLatestNumericValue(latestInterval?.timeseries.tempRoomC) ??
+                getLatestNumericValue(latestInterval?.timeseries?.tempRoomC) ??
                 null,
               bedTempC:
-                getLatestNumericValue(latestInterval?.timeseries.tempBedC) ??
+                getLatestNumericValue(latestInterval?.timeseries?.tempBedC) ??
                 null,
               currentStage,
               stageBreakdown,
