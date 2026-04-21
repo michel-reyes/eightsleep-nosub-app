@@ -17,7 +17,11 @@ import {
   primePod as primePodApi,
   setBedSide as setBedSideApi,
 } from "~/server/eight/user";
-import { CLIENT_API_URL, DEFAULT_API_HEADERS } from "~/server/eight/constants";
+import {
+  APP_API_URL,
+  CLIENT_API_URL,
+  DEFAULT_API_HEADERS,
+} from "~/server/eight/constants";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -207,6 +211,102 @@ function extractSleepSnapshot(payload: unknown) {
     score: asNumberOrNull(latestDay.score),
     durationSeconds: asNumberOrNull(latestDay.sleepDuration),
     hrv: asNumberOrNull(asRecord(asRecord(latestDay.sleepQualityScore).hrv).current),
+    heartRate: heartRate.value,
+    breathRate: respiratoryRate.value,
+    roomTempC: roomTemp.value,
+    bedTempC: bedTemp.value,
+    currentStage: asStringOrNull(latestStage.stage),
+    stageBreakdown,
+  };
+}
+
+async function fetchSessionsAll(token: Token, userId: string): Promise<JsonRecord[]> {
+  const sessions: JsonRecord[] = [];
+  const seen = new Set<string>();
+  let next: string | undefined;
+
+  for (let i = 0; i < 25; i += 1) {
+    const baseUrl = `${APP_API_URL}v1/users/${encodeURIComponent(userId)}/sessions`;
+    const url = next ? `${baseUrl}?next=${encodeURIComponent(next)}` : baseUrl;
+    let payload: unknown;
+
+    try {
+      payload = await fetchEightJson(url, token);
+    } catch (error) {
+      logDashboardFailure("sessions", error);
+      break;
+    }
+
+    const data = asRecord(payload);
+    const batch = Array.isArray(data.sessions) ? data.sessions.map(asRecord) : [];
+
+    for (const session of batch) {
+      const key =
+        asStringOrNull(session.id) ??
+        asStringOrNull(session.ts) ??
+        JSON.stringify(session);
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      sessions.push(session);
+    }
+
+    const nextToken = asStringOrNull(data.next) ?? undefined;
+    if (!nextToken) {
+      break;
+    }
+    next = nextToken;
+  }
+
+  return sessions;
+}
+
+function extractSleepSnapshotFromSessions(sessions: JsonRecord[], timezone: string) {
+  const latestSession = [...sessions]
+    .sort((a, b) => {
+      const aValue = Date.parse(asStringOrNull(a.ts) ?? "");
+      const bValue = Date.parse(asStringOrNull(b.ts) ?? "");
+      const safeA = Number.isNaN(aValue) ? 0 : aValue;
+      const safeB = Number.isNaN(bValue) ? 0 : bValue;
+      return safeA - safeB;
+    })
+    .at(-1);
+
+  if (!latestSession) {
+    return null;
+  }
+
+  const ts = asStringOrNull(latestSession.ts);
+  const stageSummary = asRecord(latestSession.stageSummary);
+  const stages = Array.isArray(latestSession.stages) ? latestSession.stages : [];
+
+  const heartRate = latestTimeseriesPoint({ sessions: [latestSession] }, "heartRate");
+  const respiratoryRate = latestTimeseriesPoint(
+    { sessions: [latestSession] },
+    "respiratoryRate",
+  );
+  const roomTemp = latestTimeseriesPoint({ sessions: [latestSession] }, "tempRoomC");
+  const bedTemp = latestTimeseriesPoint({ sessions: [latestSession] }, "tempBedC");
+
+  const latestStage = asRecord(stages.at(-1));
+  const stageBreakdown = stages.reduce<Record<string, number>>((acc, stage) => {
+    const stageRecord = asRecord(stage);
+    const stageName = asStringOrNull(stageRecord.stage);
+    const duration = asNumberOrNull(stageRecord.duration);
+    if (stageName && duration !== null) {
+      acc[stageName] = (acc[stageName] ?? 0) + duration;
+    }
+    return acc;
+  }, {});
+
+  return {
+    sessionDate: ts ? formatDateInTimezone(new Date(ts), timezone) : null,
+    bedtime: ts,
+    wakeTime: null,
+    score: asNumberOrNull(latestSession.score),
+    durationSeconds: asNumberOrNull(stageSummary.sleepDuration),
+    hrv: null,
     heartRate: heartRate.value,
     breathRate: respiratoryRate.value,
     roomTempC: roomTemp.value,
@@ -474,7 +574,7 @@ export const userRouter = createTRPCRouter({
         deviceDataResult.status === "fulfilled"
           ? asRecord(asRecord(deviceDataResult.value).result)
           : null;
-      const sleepSnapshot =
+      let sleepSnapshot =
         trendsResult.status === "fulfilled"
           ? extractSleepSnapshot(trendsResult.value)
           : null;
@@ -484,6 +584,11 @@ export const userRouter = createTRPCRouter({
       }
       if (trendsResult.status === "rejected") {
         logDashboardFailure("trends", trendsResult.reason);
+      }
+
+      if (!sleepSnapshot) {
+        const sessions = await fetchSessionsAll(token, user.eightUserId);
+        sleepSnapshot = extractSleepSnapshotFromSessions(sessions, timezone);
       }
 
       return {
