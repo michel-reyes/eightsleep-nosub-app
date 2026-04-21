@@ -1,9 +1,17 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { type RouterOutputs, apiR } from "~/trpc/react";
 import { Button } from "~/components/ui/button";
+import {
+  type TempUnit,
+  formatTemp,
+  rawLevelToTemp,
+  tempToRawLevel,
+} from "~/lib/eightTemperature";
 
 type DashboardData = RouterOutputs["user"]["getDashboard"];
+type SideValue = "solo" | "left" | "right";
 
 const sideOptions = [
   { value: "solo", label: "Both" },
@@ -70,6 +78,23 @@ function statClass(active: boolean | null) {
     : "border-white/10 bg-white/5 text-white/70";
 }
 
+function rawToDisplay(rawLevel: number | null, unit: TempUnit) {
+  return formatTemp(rawLevelToTemp(rawLevel, unit), unit, 0);
+}
+
+function rawToAltDisplay(rawLevel: number | null, unit: TempUnit) {
+  const altUnit = unit === "f" ? "c" : "f";
+  return formatTemp(rawLevelToTemp(rawLevel, altUnit), altUnit, 0);
+}
+
+function sideSummary(side: SideValue) {
+  if (side === "solo") {
+    return "Both sides";
+  }
+
+  return `${labelForSide(side)} side`;
+}
+
 function StatusPill({
   label,
   active,
@@ -90,12 +115,14 @@ function SideTempCard({
   current,
   target,
   heating,
+  unit,
 }: {
   label: string;
   active: boolean;
   current: number | null;
   target: number | null;
   heating: boolean | null;
+  unit: TempUnit;
 }) {
   return (
     <div
@@ -119,16 +146,18 @@ function SideTempCard({
             Current
           </div>
           <div className="mt-1 text-xl font-semibold text-white">
-            {formatNumber(current)}
+            {rawToDisplay(current, unit)}
           </div>
+          <div className="text-xs text-white/45">{rawToAltDisplay(current, unit)}</div>
         </div>
         <div>
           <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
             Target
           </div>
           <div className="mt-1 text-xl font-semibold text-white">
-            {formatNumber(target)}
+            {rawToDisplay(target, unit)}
           </div>
+          <div className="text-xs text-white/45">{rawToAltDisplay(target, unit)}</div>
         </div>
       </div>
       <div className="mt-3 text-sm text-white/70">
@@ -138,7 +167,7 @@ function SideTempCard({
   );
 }
 
-function SleepCard({ sleep }: { sleep: DashboardData["sleep"] }) {
+function SleepCard({ sleep, unit }: { sleep: DashboardData["sleep"]; unit: TempUnit }) {
   if (!sleep) {
     return (
       <section className="rounded-[28px] border border-white/10 bg-[#2a0f52]/90 p-5 text-white shadow-xl">
@@ -148,14 +177,20 @@ function SleepCard({ sleep }: { sleep: DashboardData["sleep"] }) {
             Unavailable
           </div>
         </div>
-        <p className="mt-4 text-sm text-white/70">
-          No recent sleep data from Eight yet.
-        </p>
+        <p className="mt-4 text-sm text-white/70">No recent sleep data from Eight yet.</p>
       </section>
     );
   }
 
   const stageEntries = Object.entries(sleep.stageBreakdown);
+  const bedTemp =
+    sleep.bedTempC === null
+      ? "--"
+      : formatTemp(unit === "c" ? sleep.bedTempC : sleep.bedTempC * 1.8 + 32, unit, 1);
+  const roomTemp =
+    sleep.roomTempC === null
+      ? "--"
+      : formatTemp(unit === "c" ? sleep.roomTempC : sleep.roomTempC * 1.8 + 32, unit, 1);
 
   return (
     <section className="rounded-[28px] border border-white/10 bg-[#2a0f52]/90 p-5 text-white shadow-xl">
@@ -168,9 +203,7 @@ function SleepCard({ sleep }: { sleep: DashboardData["sleep"] }) {
           <div className="text-[11px] uppercase tracking-[0.24em] text-cyan-100/70">
             Score
           </div>
-          <div className="text-3xl font-semibold text-cyan-100">
-            {sleep.score ?? "--"}
-          </div>
+          <div className="text-3xl font-semibold text-cyan-100">{sleep.score ?? "--"}</div>
         </div>
       </div>
 
@@ -184,28 +217,18 @@ function SleepCard({ sleep }: { sleep: DashboardData["sleep"] }) {
           </div>
         </div>
         <div className="rounded-[20px] border border-white/10 bg-white/5 p-4">
-          <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
-            Stage
-          </div>
+          <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">Stage</div>
           <div className="mt-2 text-xl font-semibold capitalize">
             {sleep.currentStage ?? "--"}
           </div>
         </div>
         <div className="rounded-[20px] border border-white/10 bg-white/5 p-4">
-          <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
-            Bedtime
-          </div>
-          <div className="mt-2 text-base font-semibold">
-            {formatDateTime(sleep.bedtime)}
-          </div>
+          <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">Bedtime</div>
+          <div className="mt-2 text-base font-semibold">{formatDateTime(sleep.bedtime)}</div>
         </div>
         <div className="rounded-[20px] border border-white/10 bg-white/5 p-4">
-          <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
-            Wake
-          </div>
-          <div className="mt-2 text-base font-semibold">
-            {formatDateTime(sleep.wakeTime)}
-          </div>
+          <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">Wake</div>
+          <div className="mt-2 text-base font-semibold">{formatDateTime(sleep.wakeTime)}</div>
         </div>
       </div>
 
@@ -219,9 +242,7 @@ function SleepCard({ sleep }: { sleep: DashboardData["sleep"] }) {
           </div>
         </div>
         <div className="rounded-[20px] border border-white/10 bg-white/5 p-4">
-          <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
-            HRV
-          </div>
+          <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">HRV</div>
           <div className="mt-2 text-lg font-semibold">
             {formatNumber(sleep.hrv, { maximumFractionDigits: 0 }, " ms")}
           </div>
@@ -235,20 +256,14 @@ function SleepCard({ sleep }: { sleep: DashboardData["sleep"] }) {
           </div>
         </div>
         <div className="rounded-[20px] border border-white/10 bg-white/5 p-4">
-          <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
-            Bed Temp
-          </div>
-          <div className="mt-2 text-lg font-semibold">
-            {formatNumber(sleep.bedTempC, { maximumFractionDigits: 1 }, " C")}
-          </div>
+          <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">Bed Temp</div>
+          <div className="mt-2 text-lg font-semibold">{bedTemp}</div>
         </div>
-        <div className="rounded-[20px] border border-white/10 bg-white/5 p-4 col-span-2">
+        <div className="col-span-2 rounded-[20px] border border-white/10 bg-white/5 p-4">
           <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
             Room Temp
           </div>
-          <div className="mt-2 text-lg font-semibold">
-            {formatNumber(sleep.roomTempC, { maximumFractionDigits: 1 }, " C")}
-          </div>
+          <div className="mt-2 text-lg font-semibold">{roomTemp}</div>
         </div>
       </div>
 
@@ -258,19 +273,17 @@ function SleepCard({ sleep }: { sleep: DashboardData["sleep"] }) {
             Stage Breakdown
           </div>
           <div className="grid grid-cols-2 gap-3">
-          {stageEntries.map(([stage, seconds]) => (
-            <div
-              key={stage}
-              className="rounded-[20px] border border-white/10 bg-white/5 p-4"
-            >
-              <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
-                {stage}
+            {stageEntries.map(([stage, seconds]) => (
+              <div
+                key={stage}
+                className="rounded-[20px] border border-white/10 bg-white/5 p-4"
+              >
+                <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
+                  {stage}
+                </div>
+                <div className="mt-2 text-lg font-semibold">{formatDuration(seconds)}</div>
               </div>
-              <div className="mt-2 text-lg font-semibold">
-                {formatDuration(seconds)}
-              </div>
-            </div>
-          ))}
+            ))}
           </div>
         </div>
       )}
@@ -283,6 +296,13 @@ export function EightDashboard() {
   const dashboardQuery = apiR.user.getDashboard.useQuery(undefined, {
     refetchInterval: 60_000,
   });
+  const [selectedSide, setSelectedSide] = useState<SideValue>("solo");
+  const [tempUnit, setTempUnit] = useState<TempUnit>("f");
+  const [tempInput, setTempInput] = useState(81);
+  const [pendingRawLevel, setPendingRawLevel] = useState<number | null>(null);
+  const currentSideValue = dashboardQuery.data?.account.currentSide;
+  const leftTargetValue = dashboardQuery.data?.podStatus.leftTargetHeatingLevel;
+  const rightTargetValue = dashboardQuery.data?.podStatus.rightTargetHeatingLevel;
 
   const primePodMutation = apiR.user.primePod.useMutation({
     onSuccess: async () => {
@@ -295,6 +315,50 @@ export function EightDashboard() {
       await utils.user.getDashboard.invalidate();
     },
   });
+
+  const setCurrentTemperatureMutation = apiR.user.setCurrentTemperature.useMutation({
+    onSuccess: async () => {
+      await utils.user.getDashboard.invalidate();
+    },
+    onError: () => {
+      setPendingRawLevel(null);
+    },
+  });
+
+  useEffect(() => {
+    if (currentSideValue === undefined) {
+      return;
+    }
+
+    setSelectedSide((currentSideValue as SideValue | null) ?? "solo");
+  }, [currentSideValue]);
+
+  useEffect(() => {
+    if (leftTargetValue === undefined && rightTargetValue === undefined) {
+      return;
+    }
+
+    setPendingRawLevel(null);
+  }, [leftTargetValue, rightTargetValue]);
+
+  const selectedCurrentRaw = dashboardQuery.data
+    ? selectedSide === "right"
+      ? dashboardQuery.data.podStatus.rightHeatingLevel
+      : dashboardQuery.data.podStatus.leftHeatingLevel
+    : null;
+  const selectedServerTargetRaw = dashboardQuery.data
+    ? selectedSide === "right"
+      ? dashboardQuery.data.podStatus.rightTargetHeatingLevel
+      : dashboardQuery.data.podStatus.leftTargetHeatingLevel
+    : null;
+  const selectedTargetRaw = pendingRawLevel ?? selectedServerTargetRaw ?? selectedCurrentRaw;
+
+  useEffect(() => {
+    const nextTemp = rawLevelToTemp(selectedTargetRaw, tempUnit);
+    if (nextTemp !== null) {
+      setTempInput(Math.round(nextTemp));
+    }
+  }, [selectedTargetRaw, tempUnit]);
 
   if (dashboardQuery.isLoading) {
     return (
@@ -313,10 +377,28 @@ export function EightDashboard() {
   }
 
   const { account, podStatus, sleep } = dashboardQuery.data;
-  const currentSideLabel = labelForSide(account.currentSide);
-  const leftActive = account.currentSide === "left";
-  const rightActive = account.currentSide === "right";
-  const bothActive = account.currentSide === "solo";
+
+  const leftActive = selectedSide === "left" || selectedSide === "solo";
+  const rightActive = selectedSide === "right" || selectedSide === "solo";
+  const leftTargetDisplay =
+    pendingRawLevel !== null && selectedSide !== "right"
+      ? pendingRawLevel
+      : podStatus.leftTargetHeatingLevel;
+  const rightTargetDisplay =
+    pendingRawLevel !== null && selectedSide !== "left"
+      ? pendingRawLevel
+      : podStatus.rightTargetHeatingLevel;
+  const sliderMin = tempUnit === "f" ? 55 : 13;
+  const sliderMax = tempUnit === "f" ? 111 : 44;
+
+  const applyTemperature = () => {
+    const rawLevel = tempToRawLevel(tempInput, tempUnit);
+    setPendingRawLevel(rawLevel);
+    setCurrentTemperatureMutation.mutate({
+      side: selectedSide,
+      rawLevel,
+    });
+  };
 
   return (
     <div className="mx-auto flex w-full max-w-md flex-col gap-4">
@@ -329,7 +411,7 @@ export function EightDashboard() {
             </p>
           </div>
           <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-white/70">
-            Current: {currentSideLabel}
+            Current: {labelForSide(selectedSide)}
           </div>
         </div>
 
@@ -339,12 +421,21 @@ export function EightDashboard() {
               key={option.value}
               type="button"
               className={`rounded-[18px] px-3 py-3 text-sm font-semibold transition ${
-                account.currentSide === option.value
-                  ? "bg-white text-[#2a0f52]"
-                  : "text-white/75"
+                selectedSide === option.value ? "bg-white text-[#2a0f52]" : "text-white/75"
               }`}
               disabled={setBedSideMutation.isPending}
-              onClick={() => setBedSideMutation.mutate({ side: option.value })}
+              onClick={() => {
+                const nextSide = option.value;
+                setSelectedSide(nextSide);
+                setBedSideMutation.mutate(
+                  { side: nextSide },
+                  {
+                    onError: () => {
+                      setSelectedSide((account.currentSide as SideValue | null) ?? "solo");
+                    },
+                  },
+                );
+              }}
             >
               {option.label}
             </button>
@@ -352,25 +443,103 @@ export function EightDashboard() {
         </div>
 
         <p className="mt-3 text-sm text-white/65">
-          Select which mattress side your controls target. `Both` maps to the shared
-          profile. Active side is highlighted below.
+          Pick the side first. Then set the live temperature for that side. `Both`
+          applies one shared level.
         </p>
 
         <div className="mt-4 grid grid-cols-2 gap-3">
           <SideTempCard
             label="Left Side"
-            active={leftActive || bothActive}
+            active={leftActive}
             current={podStatus.leftHeatingLevel}
-            target={podStatus.leftTargetHeatingLevel}
+            target={leftTargetDisplay}
             heating={podStatus.leftNowHeating}
+            unit={tempUnit}
           />
           <SideTempCard
             label="Right Side"
             active={rightActive}
             current={podStatus.rightHeatingLevel}
-            target={podStatus.rightTargetHeatingLevel}
+            target={rightTargetDisplay}
             heating={podStatus.rightNowHeating}
+            unit={tempUnit}
           />
+        </div>
+
+        <div className="mt-4 rounded-[24px] border border-white/10 bg-black/20 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
+                Set Temperature
+              </div>
+              <div className="mt-1 text-lg font-semibold text-white">
+                {sideSummary(selectedSide)}
+              </div>
+              <div className="text-sm text-white/55">
+                Current {rawToDisplay(selectedCurrentRaw, tempUnit)} · Target{" "}
+                {rawToDisplay(selectedTargetRaw, tempUnit)}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-1 rounded-full bg-white/5 p-1">
+              {(["f", "c"] as const).map((unit) => (
+                <button
+                  key={unit}
+                  type="button"
+                  className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                    tempUnit === unit ? "bg-white text-[#2a0f52]" : "text-white/70"
+                  }`}
+                  onClick={() => setTempUnit(unit)}
+                >
+                  °{unit.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-[20px] border border-cyan-300/20 bg-cyan-300/10 p-4 text-center">
+            <div className="text-3xl font-semibold text-cyan-100">
+              {formatTemp(tempInput, tempUnit, 0)}
+            </div>
+            <div className="mt-1 text-sm text-cyan-100/70">
+              {formatTemp(
+                tempUnit === "f" ? (tempInput - 32) / 1.8 : tempInput * 1.8 + 32,
+                tempUnit === "f" ? "c" : "f",
+                0,
+              )}
+            </div>
+          </div>
+
+          <input
+            type="range"
+            min={sliderMin}
+            max={sliderMax}
+            step="1"
+            value={tempInput}
+            onChange={(event) => setTempInput(Number(event.target.value))}
+            className="mt-4 h-2 w-full cursor-pointer appearance-none rounded-lg bg-white/15"
+          />
+
+          <div className="mt-2 flex items-center justify-between text-xs text-white/45">
+            <span>
+              {formatTemp(sliderMin, tempUnit, 0)}
+            </span>
+            <span>
+              Raw {tempToRawLevel(tempInput, tempUnit)}
+            </span>
+            <span>
+              {formatTemp(sliderMax, tempUnit, 0)}
+            </span>
+          </div>
+
+          <Button
+            className="mt-4 h-12 w-full rounded-[18px] bg-white text-[#2a0f52] hover:bg-white/90"
+            disabled={setCurrentTemperatureMutation.isPending}
+            onClick={applyTemperature}
+          >
+            {setCurrentTemperatureMutation.isPending
+              ? "Applying..."
+              : `Set ${sideSummary(selectedSide)} to ${formatTemp(tempInput, tempUnit, 0)}`}
+          </Button>
         </div>
 
         {account.features.length > 0 && (
@@ -387,22 +556,22 @@ export function EightDashboard() {
         )}
       </section>
 
-      <SleepCard sleep={sleep} />
+      <SleepCard sleep={sleep} unit={tempUnit} />
 
       <section className="rounded-[28px] border border-white/10 bg-[#2a0f52]/90 p-5 text-white shadow-xl">
         <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-xl font-semibold">Pod Status</h3>
-              <p className="text-sm text-white/60">{podStatus.deviceId}</p>
-            </div>
-            <Button
-              className="rounded-full bg-cyan-300 px-4 text-slate-950 hover:bg-cyan-200"
-              disabled={primePodMutation.isPending}
-              onClick={() => primePodMutation.mutate()}
-            >
-              {primePodMutation.isPending ? "Priming..." : "Prime Pod"}
-            </Button>
+          <div>
+            <h3 className="text-xl font-semibold">Pod Status</h3>
+            <p className="text-sm text-white/60">{podStatus.deviceId}</p>
           </div>
+          <Button
+            className="rounded-full bg-cyan-300 px-4 text-slate-950 hover:bg-cyan-200"
+            disabled={primePodMutation.isPending}
+            onClick={() => primePodMutation.mutate()}
+          >
+            {primePodMutation.isPending ? "Priming..." : "Prime Pod"}
+          </Button>
+        </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
           <StatusPill label="Online" active={podStatus.online} />
@@ -437,12 +606,8 @@ export function EightDashboard() {
             </div>
           </div>
           <div className="rounded-[20px] border border-white/10 bg-white/5 p-4">
-            <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">
-              Model
-            </div>
-            <div className="mt-2 text-base font-semibold">
-              {podStatus.modelString ?? "--"}
-            </div>
+            <div className="text-[11px] uppercase tracking-[0.2em] text-white/45">Model</div>
+            <div className="mt-2 text-base font-semibold">{podStatus.modelString ?? "--"}</div>
           </div>
         </div>
       </section>

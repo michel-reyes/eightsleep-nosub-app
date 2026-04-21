@@ -17,6 +17,7 @@ import {
   primePod as primePodApi,
   setBedSide as setBedSideApi,
 } from "~/server/eight/user";
+import { setHeatingLevel, turnOnSide } from "~/server/eight/eight";
 import {
   APP_API_URL,
   CLIENT_API_URL,
@@ -680,6 +681,36 @@ export const userRouter = createTRPCRouter({
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to set bed side.",
+        });
+      }
+    }),
+
+  setCurrentTemperature: publicProcedure
+    .input(
+      z.object({
+        side: z.enum(["solo", "left", "right"]),
+        rawLevel: z.number().int().min(-100).max(100),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const { user, token, deviceId } = await getAuthenticatedEightContext(
+          ctx.headers,
+        );
+
+        await setBedSideApi(token, user.eightUserId, deviceId, input.side);
+        await turnOnSide(token, user.eightUserId);
+        await setHeatingLevel(token, user.eightUserId, input.rawLevel);
+
+        return { success: true };
+      } catch (error) {
+        console.error("Error setting current temperature:", error);
+        if (error instanceof TRPCError) {
+          throw error;
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to set current temperature.",
         });
       }
     }),

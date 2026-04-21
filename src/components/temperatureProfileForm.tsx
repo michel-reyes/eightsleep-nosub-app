@@ -6,6 +6,7 @@ import { z } from "zod";
 import { apiR } from "~/trpc/react";
 import TimezoneSelect, { allTimezones } from "react-timezone-select";
 import { Button } from "./ui/button";
+import { formatTemp, rawLevelToTemp } from "~/lib/eightTemperature";
 
 const temperatureProfileSchema = z.object({
   bedTime: z.string().regex(/^\d{2}:\d{2}$/, "Must be in HH:MM format"),
@@ -158,6 +159,15 @@ export const TemperatureProfileForm: React.FC = () => {
     }
   };
 
+  const describeLevel = (value: number) => {
+    const rawLevel = Math.round(value * 10);
+    return `Level ${value} = ${formatTemp(rawLevelToTemp(rawLevel, "c"), "c", 0)} / ${formatTemp(
+      rawLevelToTemp(rawLevel, "f"),
+      "f",
+      0,
+    )}`;
+  };
+
   const SliderInput: React.FC<{
     name: "initialSleepLevel" | "midStageSleepLevel" | "finalSleepLevel";
     label: string;
@@ -172,17 +182,20 @@ export const TemperatureProfileForm: React.FC = () => {
         name={name}
         control={control}
         render={({ field: { onChange, value } }) => (
-          <div className="flex items-center">
-            <input
-              type="range"
-              min="-10"
-              max="10"
-              step="1"
-              value={value}
-              onChange={(e) => onChange(Number(e.target.value))}
-              className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-gray-200"
-            />
-            <span className="ml-2 text-sm text-gray-600">{value}</span>
+          <div>
+            <div className="flex items-center">
+              <input
+                type="range"
+                min="-10"
+                max="10"
+                step="1"
+                value={value}
+                onChange={(e) => onChange(Number(e.target.value))}
+                className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-gray-200"
+              />
+              <span className="ml-2 min-w-8 text-right text-sm text-gray-600">{value}</span>
+            </div>
+            <div className="mt-1 text-xs text-slate-500">{describeLevel(value)}</div>
           </div>
         )}
       />
@@ -284,6 +297,10 @@ export const TemperatureProfileForm: React.FC = () => {
               Bed will prepare for sleep one hour before the bed time.
             </p>
           )}
+        </div>
+
+        <div className="rounded-md bg-slate-100 p-3 text-sm text-slate-700">
+          `0, 1, 0` maps to about `27°C / 81°F`, `29°C / 84°F`, `27°C / 81°F`.
         </div>
 
         <SliderInput
