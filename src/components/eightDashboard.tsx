@@ -296,7 +296,8 @@ export function EightDashboard() {
   const dashboardQuery = apiR.user.getDashboard.useQuery(undefined, {
     refetchInterval: 60_000,
   });
-  const [selectedSide, setSelectedSide] = useState<SideValue>("solo");
+  const [serverSide, setServerSide] = useState<SideValue>("solo");
+  const [optimisticSide, setOptimisticSide] = useState<SideValue | null>(null);
   const [tempUnit, setTempUnit] = useState<TempUnit>("f");
   const [tempInput, setTempInput] = useState(81);
   const [pendingRawLevel, setPendingRawLevel] = useState<number | null>(null);
@@ -330,8 +331,13 @@ export function EightDashboard() {
       return;
     }
 
-    setSelectedSide((currentSideValue as SideValue | null) ?? "solo");
-  }, [currentSideValue]);
+    const nextServerSide = (currentSideValue as SideValue | null) ?? "solo";
+    setServerSide(nextServerSide);
+
+    if (optimisticSide === nextServerSide) {
+      setOptimisticSide(null);
+    }
+  }, [currentSideValue, optimisticSide]);
 
   useEffect(() => {
     if (leftTargetValue === undefined && rightTargetValue === undefined) {
@@ -340,6 +346,8 @@ export function EightDashboard() {
 
     setPendingRawLevel(null);
   }, [leftTargetValue, rightTargetValue]);
+
+  const selectedSide = optimisticSide ?? serverSide;
 
   const selectedCurrentRaw = dashboardQuery.data
     ? selectedSide === "right"
@@ -426,12 +434,12 @@ export function EightDashboard() {
               disabled={setBedSideMutation.isPending}
               onClick={() => {
                 const nextSide = option.value;
-                setSelectedSide(nextSide);
+                setOptimisticSide(nextSide);
                 setBedSideMutation.mutate(
                   { side: nextSide },
                   {
                     onError: () => {
-                      setSelectedSide((account.currentSide as SideValue | null) ?? "solo");
+                      setOptimisticSide(null);
                     },
                   },
                 );
