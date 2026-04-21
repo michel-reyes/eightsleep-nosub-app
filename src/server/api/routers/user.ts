@@ -13,6 +13,14 @@ import { type Token } from "~/server/eight/types";
 import { TRPCError } from "@trpc/server";
 import { adjustTemperature } from "~/app/api/temperatureCron/route";
 import jwt from "jsonwebtoken";
+import {
+  getIntervalsData,
+  getTrendData,
+  getUserProfile,
+  primePod as primePodApi,
+  setBedSide as setBedSideApi,
+} from "~/server/eight/user";
+import { getDeviceData } from "~/server/eight/eight";
 
 class DatabaseError extends Error {
   constructor(message: string) {
@@ -48,6 +56,104 @@ const checkAuthCookie = async (headers: Headers) => {
 
   return decoded;
 };
+
+function formatDateInTimezone(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+
+  if (!year || !month || !day) {
+    throw new Error("Failed to format date in timezone");
+  }
+
+  return `${year}-${month}-${day}`;
+}
+
+function sortByDateValue<T>(items: T[], getValue: (item: T) => string) {
+  return [...items].sort((a, b) => {
+    const aValue = Date.parse(getValue(a));
+    const bValue = Date.parse(getValue(b));
+    return aValue - bValue;
+  });
+}
+
+function getLatestNumericValue(
+  values: Array<[string, number]> | undefined,
+): number | null {
+  if (!values || values.length === 0) {
+    return null;
+  }
+
+  return values[values.length - 1]?.[1] ?? null;
+}
+
+async function getAuthenticatedEightContext(headers: Headers) {
+  const decoded = await checkAuthCookie(headers);
+
+  const userList = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, decoded.email))
+    .limit(1)
+    .execute();
+  const user = userList[0];
+
+  if (!user) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: "User not found.",
+    });
+  }
+
+  let token: Token = {
+    eightAccessToken: user.eightAccessToken,
+    eightRefreshToken: user.eightRefreshToken,
+    eightExpiresAtPosix: user.eightTokenExpiresAt.getTime(),
+    eightUserId: user.eightUserId,
+  };
+
+  if (user.eightTokenExpiresAt < new Date()) {
+    token = await obtainFreshAccessToken(
+      user.eightRefreshToken,
+      user.eightUserId,
+    );
+
+    await db
+      .update(users)
+      .set({
+        eightAccessToken: token.eightAccessToken,
+        eightRefreshToken: token.eightRefreshToken,
+        eightTokenExpiresAt: new Date(token.eightExpiresAtPosix),
+      })
+      .where(eq(users.email, user.email))
+      .execute();
+  }
+
+  const userProfile = await getUserProfile(token);
+  const deviceId = userProfile.currentDevice?.id ?? userProfile.devices[0];
+
+  if (!deviceId) {
+    throw new TRPCError({
+      code: "NOT_FOUND",
+      message: "No Eight Sleep device found for user.",
+    });
+  }
+
+  return {
+    user,
+    token,
+    userProfile,
+    deviceId,
+    timezone: userProfile.currentDevice?.timeZone ?? "UTC",
+  };
+}
 
 export const userRouter = createTRPCRouter({
   checkLoginState: publicProcedure.query(async ({ ctx }) => {
@@ -216,6 +322,166 @@ export const userRouter = createTRPCRouter({
       });
     }
   }),
+
+  getDashboard: publicProcedure.query(async ({ ctx }) => {
+    try {
+      const { user, token, userProfile, deviceId, timezone } =
+        await getAuthenticatedEightContext(ctx.headers);
+
+      const now = new Date();
+      const startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 14);
+
+      const [deviceData, trendData, intervalsData] = await Promise.all([
+        getDeviceData(token, deviceId),
+        getTrendData(
+          token,
+          user.eightUserId,
+          formatDateInTimezone(startDate, timezone),
+          formatDateInTimezone(now, timezone),
+          timezone,
+        ),
+        getIntervalsData(token, user.eightUserId),
+      ]);
+
+      const latestTrend = sortByDateValue(trendData, (item) => item.presenceEnd)
+        .filter((item) => item.sleepDuration > 0)
+        .at(-1);
+      const latestInterval = sortByDateValue(intervalsData, (item) => item.ts).at(
+        -1,
+      );
+
+      const stageBreakdown = latestInterval?.stages.reduce<Record<string, number>>(
+        (acc, stage) => {
+          acc[stage.stage] = (acc[stage.stage] ?? 0) + stage.duration;
+          return acc;
+        },
+        {},
+      ) ?? {};
+
+      const latestStages = latestInterval?.stages ?? [];
+      const currentStage =
+        latestStages.length === 0
+          ? null
+          : latestInterval?.incomplete && latestStages.length > 1
+            ? latestStages[latestStages.length - 2]?.stage ?? null
+            : latestStages[latestStages.length - 1]?.stage ?? null;
+
+      return {
+        account: {
+          email: user.email,
+          currentSide: userProfile.currentDevice?.side ?? null,
+          currentDeviceId: deviceId,
+          timezone,
+          features: userProfile.features ?? [],
+        },
+        podStatus: {
+          deviceId,
+          online: deviceData.online ?? null,
+          priming: deviceData.priming ?? null,
+          needsPriming: deviceData.needsPriming ?? null,
+          hasWater: deviceData.hasWater ?? null,
+          lastPrime: deviceData.lastPrime ?? null,
+          lastHeard: deviceData.lastHeard ?? null,
+          firmwareVersion: deviceData.firmwareVersion ?? null,
+          modelString: deviceData.modelString ?? null,
+          hubSerial: deviceData.hubSerial ?? null,
+          features: deviceData.features ?? [],
+          leftHeatingLevel: deviceData.leftHeatingLevel,
+          leftTargetHeatingLevel: deviceData.leftTargetHeatingLevel,
+          leftNowHeating: deviceData.leftNowHeating,
+          rightHeatingLevel: deviceData.rightHeatingLevel,
+          rightTargetHeatingLevel: deviceData.rightTargetHeatingLevel,
+          rightNowHeating: deviceData.rightNowHeating,
+        },
+        sleep: latestTrend
+          ? {
+              sessionDate: latestTrend.day,
+              bedtime: latestTrend.presenceStart,
+              wakeTime: latestTrend.presenceEnd,
+              score: latestTrend.score,
+              durationSeconds: latestTrend.sleepDuration,
+              hrv: latestTrend.sleepQualityScore?.hrv?.current ?? null,
+              heartRate:
+                getLatestNumericValue(latestInterval?.timeseries.heartRate) ??
+                latestTrend.sleepRoutineScore?.heartRate?.current ??
+                null,
+              breathRate:
+                getLatestNumericValue(
+                  latestInterval?.timeseries.respiratoryRate,
+                ) ??
+                latestTrend.sleepQualityScore?.respiratoryRate?.current ??
+                null,
+              roomTempC:
+                getLatestNumericValue(latestInterval?.timeseries.tempRoomC) ??
+                null,
+              bedTempC:
+                getLatestNumericValue(latestInterval?.timeseries.tempBedC) ??
+                null,
+              currentStage,
+              stageBreakdown,
+            }
+          : null,
+      };
+    } catch (error) {
+      console.error("Error fetching dashboard data:", error);
+      if (error instanceof TRPCError) {
+        throw error;
+      }
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to fetch dashboard data.",
+      });
+    }
+  }),
+
+  primePod: publicProcedure.mutation(async ({ ctx }) => {
+    try {
+      const { user, token, deviceId } = await getAuthenticatedEightContext(
+        ctx.headers,
+      );
+
+      await primePodApi(token, deviceId, user.eightUserId);
+
+      return { success: true };
+    } catch (error) {
+      console.error("Error priming pod:", error);
+      if (error instanceof TRPCError) {
+        throw error;
+      }
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: "Failed to prime pod.",
+      });
+    }
+  }),
+
+  setBedSide: publicProcedure
+    .input(
+      z.object({
+        side: z.enum(["solo", "left", "right"]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const { user, token, deviceId } = await getAuthenticatedEightContext(
+          ctx.headers,
+        );
+
+        await setBedSideApi(token, user.eightUserId, deviceId, input.side);
+
+        return { success: true };
+      } catch (error) {
+        console.error("Error setting bed side:", error);
+        if (error instanceof TRPCError) {
+          throw error;
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to set bed side.",
+        });
+      }
+    }),
 
   updateUserTemperatureProfile: publicProcedure
     .input(

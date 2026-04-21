@@ -68,7 +68,19 @@ export const DeviceDataSchema = z.object({
     rightTargetHeatingLevel: z.number(),
     rightNowHeating: z.boolean(),
     rightHeatingDuration: z.number(),
-  }),
+    features: z.array(z.string()).optional(),
+    online: z.boolean().optional(),
+    priming: z.boolean().optional(),
+    needsPriming: z.boolean().optional(),
+    hasWater: z.boolean().optional(),
+    lastPrime: z.string().optional(),
+    lastHeard: z.string().optional(),
+    modelString: z.string().optional(),
+    hubSerial: z.string().optional(),
+    firmwareVersion: z.string().optional(),
+    leftKelvin: z.number().optional(),
+    rightKelvin: z.number().optional(),
+  }).passthrough(),
 });
 
 export const TrendDataSchema = z.object({
@@ -80,19 +92,24 @@ export const TrendDataSchema = z.object({
         sleepDuration: z.number(),
         presenceStart: z.string(),
         presenceEnd: z.string(),
+        lightDuration: z.number().optional(),
+        deepDuration: z.number().optional(),
+        remDuration: z.number().optional(),
+        presenceDuration: z.number().optional(),
+        processing: z.boolean().optional(),
         sleepQualityScore: z.object({
-          total: z.number(),
-          sleepDurationSeconds: z.object({ score: z.number() }),
-          hrv: z.object({ current: z.number() }),
-          respiratoryRate: z.object({ current: z.number() }),
-        }),
+          total: z.number().optional(),
+          sleepDurationSeconds: z.object({ score: z.number().optional() }).optional(),
+          hrv: z.object({ current: z.number().nullable().optional() }).optional(),
+          respiratoryRate: z.object({ current: z.number().nullable().optional() }).optional(),
+        }).passthrough().optional(),
         sleepRoutineScore: z.object({
-          total: z.number(),
-          latencyAsleepSeconds: z.object({ score: z.number() }),
-          latencyOutSeconds: z.object({ score: z.number() }),
-          wakeupConsistency: z.object({ score: z.number() }),
-          heartRate: z.object({ current: z.number() }),
-        }),
+          total: z.number().optional(),
+          latencyAsleepSeconds: z.object({ score: z.number().optional() }).optional(),
+          latencyOutSeconds: z.object({ score: z.number().optional() }).optional(),
+          wakeupConsistency: z.object({ score: z.number().optional() }).optional(),
+          heartRate: z.object({ current: z.number().nullable().optional() }).optional(),
+        }).passthrough().optional(),
       }),
     ),
   }),
@@ -112,12 +129,12 @@ export const IntervalsDataSchema = z.object({
         ),
         score: z.number(),
         timeseries: z.object({
-          tnt: z.array(z.tuple([z.string(), z.number()])),
-          tempBedC: z.array(z.tuple([z.string(), z.number()])),
-          tempRoomC: z.array(z.tuple([z.string(), z.number()])),
-          respiratoryRate: z.array(z.tuple([z.string(), z.number()])),
-          heartRate: z.array(z.tuple([z.string(), z.number()])),
-        }),
+          tnt: z.array(z.tuple([z.string(), z.number()])).optional(),
+          tempBedC: z.array(z.tuple([z.string(), z.number()])).optional(),
+          tempRoomC: z.array(z.tuple([z.string(), z.number()])).optional(),
+          respiratoryRate: z.array(z.tuple([z.string(), z.number()])).optional(),
+          heartRate: z.array(z.tuple([z.string(), z.number()])).optional(),
+        }).passthrough(),
         incomplete: z.boolean(),
       }),
     ),
@@ -180,6 +197,7 @@ export type BedStateType = "smart" | "off";
 export type Side = "left" | "right" | "solo";
 export type AwayModeAction = "start" | "end";
 export type DegreeUnit = "c" | "f";
+export type SleepStage = "awake" | "light" | "deep" | "rem" | "out";
 
 export type HeatingStatus = {
   heatingLevel: HeatingLevel;
