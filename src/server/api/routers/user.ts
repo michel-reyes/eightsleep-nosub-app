@@ -14,13 +14,12 @@ import { TRPCError } from "@trpc/server";
 import { adjustTemperature } from "~/app/api/temperatureCron/route";
 import jwt from "jsonwebtoken";
 import {
-  getIntervalsData,
-  getTrendData,
-  getUserProfile,
   primePod as primePodApi,
   setBedSide as setBedSideApi,
 } from "~/server/eight/user";
-import { getDeviceData } from "~/server/eight/eight";
+import { CLIENT_API_URL, DEFAULT_API_HEADERS } from "~/server/eight/constants";
+
+type JsonRecord = Record<string, unknown>;
 
 class DatabaseError extends Error {
   constructor(message: string) {
@@ -72,6 +71,22 @@ function normalizeTimezone(timeZone: string | undefined) {
   }
 }
 
+function asRecord(value: unknown): JsonRecord {
+  return value && typeof value === "object" ? (value as JsonRecord) : {};
+}
+
+function asStringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function asNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function asBooleanOrNull(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
 function formatDateInTimezone(date: Date, timeZone: string) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: normalizeTimezone(timeZone),
@@ -81,31 +96,124 @@ function formatDateInTimezone(date: Date, timeZone: string) {
   }).format(date);
 }
 
-function safeSortByDateValue<T>(
-  items: T[],
-  getValue: (item: T) => string | undefined,
-) {
-  return [...items].sort((a, b) => {
-    const aValue = Date.parse(getValue(a) ?? "");
-    const bValue = Date.parse(getValue(b) ?? "");
+function logDashboardFailure(label: string, error: unknown) {
+  console.error(`Dashboard source failed: ${label}`, error);
+}
+
+async function fetchEightJson(
+  url: string,
+  token: Token,
+  options: RequestInit = {},
+): Promise<unknown> {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      ...DEFAULT_API_HEADERS,
+      ...options.headers,
+      authorization: `Bearer ${token.eightAccessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`API request failed: ${response.status}`);
+  }
+
+  return (await response.json()) as unknown;
+}
+
+function extractPrimaryDeviceId(mePayload: unknown): string | null {
+  const user = asRecord(asRecord(mePayload).user);
+  const currentDevice = asRecord(user.currentDevice);
+  const currentDeviceId = asStringOrNull(currentDevice.id);
+  if (currentDeviceId) {
+    return currentDeviceId;
+  }
+  const devices = Array.isArray(user.devices) ? user.devices : [];
+  return asStringOrNull(devices[0]);
+}
+
+function parseTrendsDays(payload: unknown): JsonRecord[] {
+  const root = asRecord(payload);
+  const result = asRecord(root.result);
+  const days = Array.isArray(root.days)
+    ? root.days
+    : Array.isArray(result.days)
+      ? result.days
+      : [];
+
+  return days.map(asRecord).filter((day) => Object.keys(day).length > 0);
+}
+
+function latestTimeseriesPoint(
+  day: JsonRecord,
+  key: string,
+): { value: number | null; at: string | null } {
+  const sessions = Array.isArray(day.sessions) ? day.sessions : [];
+  const latestSession = asRecord(sessions.at(-1));
+  const timeseries = asRecord(latestSession.timeseries);
+  const series: unknown[] = Array.isArray(timeseries[key]) ? timeseries[key] : [];
+  const latest = series.at(-1);
+
+  if (!Array.isArray(latest) || latest.length < 2) {
+    return { value: null, at: null };
+  }
+
+  return {
+    at: asStringOrNull(latest[0]),
+    value: asNumberOrNull(latest[1]),
+  };
+}
+
+function extractSleepSnapshot(payload: unknown) {
+  const days = parseTrendsDays(payload).sort((a, b) => {
+    const aValue = Date.parse(asStringOrNull(a.presenceEnd) ?? asStringOrNull(a.day) ?? "");
+    const bValue = Date.parse(asStringOrNull(b.presenceEnd) ?? asStringOrNull(b.day) ?? "");
     const safeA = Number.isNaN(aValue) ? 0 : aValue;
     const safeB = Number.isNaN(bValue) ? 0 : bValue;
     return safeA - safeB;
   });
-}
 
-function getLatestNumericValue(
-  values: Array<[string, number]> | undefined,
-): number | null {
-  if (!values || values.length === 0) {
+  const latestDay = days.at(-1);
+  if (!latestDay) {
     return null;
   }
 
-  return values[values.length - 1]?.[1] ?? null;
-}
+  const sessions = Array.isArray(latestDay.sessions) ? latestDay.sessions : [];
+  const latestSession = asRecord(sessions.at(-1));
+  const stages = Array.isArray(latestSession.stages) ? latestSession.stages : [];
+  const processing = asBooleanOrNull(latestDay.processing);
+  const stageIndex =
+    processing === true && stages.length > 1 ? stages.length - 2 : stages.length - 1;
+  const latestStage = stageIndex >= 0 ? asRecord(stages[stageIndex]) : {};
+  const stageBreakdown = stages.reduce<Record<string, number>>((acc, stage) => {
+    const stageRecord = asRecord(stage);
+    const stageName = asStringOrNull(stageRecord.stage);
+    const duration = asNumberOrNull(stageRecord.duration);
+    if (stageName && duration !== null) {
+      acc[stageName] = (acc[stageName] ?? 0) + duration;
+    }
+    return acc;
+  }, {});
 
-function logDashboardFailure(label: string, error: unknown) {
-  console.error(`Dashboard source failed: ${label}`, error);
+  const heartRate = latestTimeseriesPoint(latestDay, "heartRate");
+  const respiratoryRate = latestTimeseriesPoint(latestDay, "respiratoryRate");
+  const roomTemp = latestTimeseriesPoint(latestDay, "tempRoomC");
+  const bedTemp = latestTimeseriesPoint(latestDay, "tempBedC");
+
+  return {
+    sessionDate: asStringOrNull(latestDay.day),
+    bedtime: asStringOrNull(latestDay.presenceStart),
+    wakeTime: asStringOrNull(latestDay.presenceEnd),
+    score: asNumberOrNull(latestDay.score),
+    durationSeconds: asNumberOrNull(latestDay.sleepDuration),
+    hrv: asNumberOrNull(asRecord(asRecord(latestDay.sleepQualityScore).hrv).current),
+    heartRate: heartRate.value,
+    breathRate: respiratoryRate.value,
+    roomTempC: roomTemp.value,
+    bedTempC: bedTemp.value,
+    currentStage: asStringOrNull(latestStage.stage),
+    stageBreakdown,
+  };
 }
 
 async function getAuthenticatedEightContext(headers: Headers) {
@@ -150,8 +258,9 @@ async function getAuthenticatedEightContext(headers: Headers) {
       .execute();
   }
 
-  const userProfile = await getUserProfile(token);
-  const deviceId = userProfile.currentDevice?.id ?? userProfile.devices[0];
+  const mePayload = await fetchEightJson(`${CLIENT_API_URL}/users/me`, token);
+  const meUser = asRecord(asRecord(mePayload).user);
+  const deviceId = extractPrimaryDeviceId(mePayload);
 
   if (!deviceId) {
     throw new TRPCError({
@@ -163,9 +272,9 @@ async function getAuthenticatedEightContext(headers: Headers) {
   return {
     user,
     token,
-    userProfile,
+    meUser,
     deviceId,
-    timezone: normalizeTimezone(userProfile.currentDevice?.timeZone),
+    timezone: normalizeTimezone(asStringOrNull(asRecord(meUser.currentDevice).timeZone) ?? undefined),
   };
 }
 
@@ -339,130 +448,76 @@ export const userRouter = createTRPCRouter({
 
   getDashboard: publicProcedure.query(async ({ ctx }) => {
     try {
-      const { user, token, userProfile, deviceId, timezone } =
+      const { user, token, meUser, deviceId, timezone } =
         await getAuthenticatedEightContext(ctx.headers);
 
       const now = new Date();
       const startDate = new Date(now);
       startDate.setDate(startDate.getDate() - 14);
 
-      const [deviceDataResult, trendDataResult, intervalsDataResult] =
-        await Promise.allSettled([
-        getDeviceData(token, deviceId),
-        getTrendData(
+      const [deviceDataResult, trendsResult] = await Promise.allSettled([
+        fetchEightJson(`${CLIENT_API_URL}/devices/${deviceId}`, token),
+        fetchEightJson(
+          `${CLIENT_API_URL}/users/${user.eightUserId}/trends?${new URLSearchParams({
+            tz: timezone,
+            from: formatDateInTimezone(startDate, timezone),
+            to: formatDateInTimezone(now, timezone),
+            "include-main": "false",
+            "include-all-sessions": "true",
+            "model-version": "v2",
+          }).toString()}`,
           token,
-          user.eightUserId,
-          formatDateInTimezone(startDate, timezone),
-          formatDateInTimezone(now, timezone),
-          timezone,
         ),
-        getIntervalsData(token, user.eightUserId),
       ]);
 
       const deviceData =
-        deviceDataResult.status === "fulfilled" ? deviceDataResult.value : null;
-      const trendData =
-        trendDataResult.status === "fulfilled" ? trendDataResult.value : [];
-      const intervalsData =
-        intervalsDataResult.status === "fulfilled"
-          ? intervalsDataResult.value
-          : [];
+        deviceDataResult.status === "fulfilled"
+          ? asRecord(asRecord(deviceDataResult.value).result)
+          : null;
+      const sleepSnapshot =
+        trendsResult.status === "fulfilled"
+          ? extractSleepSnapshot(trendsResult.value)
+          : null;
 
       if (deviceDataResult.status === "rejected") {
         logDashboardFailure("deviceData", deviceDataResult.reason);
       }
-      if (trendDataResult.status === "rejected") {
-        logDashboardFailure("trendData", trendDataResult.reason);
+      if (trendsResult.status === "rejected") {
+        logDashboardFailure("trends", trendsResult.reason);
       }
-      if (intervalsDataResult.status === "rejected") {
-        logDashboardFailure("intervalsData", intervalsDataResult.reason);
-      }
-
-      const latestTrend = safeSortByDateValue(
-        trendData,
-        (item) => item.presenceEnd,
-      )
-        .filter(
-          (item) =>
-            (item.sleepDuration ?? 0) > 0 &&
-            Boolean(item.presenceStart) &&
-            Boolean(item.presenceEnd),
-        )
-        .at(-1);
-      const latestInterval = safeSortByDateValue(
-        intervalsData,
-        (item) => item.ts,
-      ).at(-1);
-
-      const stageBreakdown =
-        latestInterval?.stages?.reduce<Record<string, number>>((acc, stage) => {
-          acc[stage.stage] = (acc[stage.stage] ?? 0) + stage.duration;
-          return acc;
-        }, {}) ?? {};
-
-      const latestStages = latestInterval?.stages ?? [];
-      const currentStage =
-        latestStages.length === 0
-          ? null
-          : latestInterval?.incomplete && latestStages.length > 1
-            ? latestStages[latestStages.length - 2]?.stage ?? null
-            : latestStages[latestStages.length - 1]?.stage ?? null;
 
       return {
         account: {
           email: user.email,
-          currentSide: userProfile.currentDevice?.side ?? null,
+          currentSide: asStringOrNull(asRecord(meUser.currentDevice).side),
           currentDeviceId: deviceId,
           timezone,
-          features: userProfile.features ?? [],
+          features: Array.isArray(meUser.features)
+            ? meUser.features.map((value) => String(value))
+            : [],
         },
         podStatus: {
           deviceId,
-          online: deviceData?.online ?? null,
-          priming: deviceData?.priming ?? null,
-          needsPriming: deviceData?.needsPriming ?? null,
-          hasWater: deviceData?.hasWater ?? null,
-          lastPrime: deviceData?.lastPrime ?? null,
-          lastHeard: deviceData?.lastHeard ?? null,
-          firmwareVersion: deviceData?.firmwareVersion ?? null,
-          modelString: deviceData?.modelString ?? null,
-          hubSerial: deviceData?.hubSerial ?? null,
-          features: deviceData?.features ?? [],
-          leftHeatingLevel: deviceData?.leftHeatingLevel ?? null,
-          leftTargetHeatingLevel: deviceData?.leftTargetHeatingLevel ?? null,
-          leftNowHeating: deviceData?.leftNowHeating ?? null,
-          rightHeatingLevel: deviceData?.rightHeatingLevel ?? null,
-          rightTargetHeatingLevel: deviceData?.rightTargetHeatingLevel ?? null,
-          rightNowHeating: deviceData?.rightNowHeating ?? null,
+          online: asBooleanOrNull(deviceData?.online),
+          priming: asBooleanOrNull(deviceData?.priming),
+          needsPriming: asBooleanOrNull(deviceData?.needsPriming),
+          hasWater: asBooleanOrNull(deviceData?.hasWater),
+          lastPrime: asStringOrNull(deviceData?.lastPrime),
+          lastHeard: asStringOrNull(deviceData?.lastHeard),
+          firmwareVersion: asStringOrNull(deviceData?.firmwareVersion),
+          modelString: asStringOrNull(deviceData?.modelString),
+          hubSerial: asStringOrNull(deviceData?.hubSerial),
+          features: Array.isArray(deviceData?.features)
+            ? deviceData.features.map((value) => String(value))
+            : [],
+          leftHeatingLevel: asNumberOrNull(deviceData?.leftHeatingLevel),
+          leftTargetHeatingLevel: asNumberOrNull(deviceData?.leftTargetHeatingLevel),
+          leftNowHeating: asBooleanOrNull(deviceData?.leftNowHeating),
+          rightHeatingLevel: asNumberOrNull(deviceData?.rightHeatingLevel),
+          rightTargetHeatingLevel: asNumberOrNull(deviceData?.rightTargetHeatingLevel),
+          rightNowHeating: asBooleanOrNull(deviceData?.rightNowHeating),
         },
-        sleep: latestTrend
-          ? {
-              sessionDate: latestTrend.day ?? null,
-              bedtime: latestTrend.presenceStart ?? null,
-              wakeTime: latestTrend.presenceEnd ?? null,
-              score: latestTrend.score ?? null,
-              durationSeconds: latestTrend.sleepDuration ?? null,
-              hrv: latestTrend.sleepQualityScore?.hrv?.current ?? null,
-              heartRate:
-                getLatestNumericValue(latestInterval?.timeseries?.heartRate) ??
-                latestTrend.sleepRoutineScore?.heartRate?.current ??
-                null,
-              breathRate:
-                getLatestNumericValue(
-                  latestInterval?.timeseries?.respiratoryRate,
-                ) ??
-                latestTrend.sleepQualityScore?.respiratoryRate?.current ??
-                null,
-              roomTempC:
-                getLatestNumericValue(latestInterval?.timeseries?.tempRoomC) ??
-                null,
-              bedTempC:
-                getLatestNumericValue(latestInterval?.timeseries?.tempBedC) ??
-                null,
-              currentStage,
-              stageBreakdown,
-            }
-          : null,
+        sleep: sleepSnapshot,
       };
     } catch (error) {
       console.error("Error fetching dashboard data:", error);
